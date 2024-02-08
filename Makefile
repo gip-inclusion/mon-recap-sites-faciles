@@ -45,7 +45,7 @@ init:
 	$(EXEC_CMD) poetry run pre-commit install
 	$(EXEC_CMD) poetry run python manage.py migrate
 	make collectstatic
-	$(EXEC_CMD) poetry run python manage.py create_sample_pages
+#	$(EXEC_CMD) poetry run python manage.py create_sample_pages
 
 .PHONY: runserver
 runserver:
