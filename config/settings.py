@@ -14,11 +14,11 @@ https://github.com/betagouv/tous-a-bord/blob/main/config/settings.py
 """
 
 import os
+import sys
 from pathlib import Path
 
 import dj_database_url
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -35,14 +35,24 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True if os.getenv("DEBUG") == "True" else False
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1, localhost").replace(" ", "").split(",")
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,.localhost").replace(" ", "").split(",")
+
+HOST_URL = os.getenv("HOST_URL", "localhost")
+
+INTERNAL_IPS = [
+    "127.0.0.1",
+]
+
+TESTING = "test" in sys.argv
 
 # Application definition
 
 INSTALLED_APPS = [
     "storages",
     "dashboard",
+    "wagtail.contrib.forms",
     "wagtail.contrib.redirects",
+    "wagtail.contrib.routable_page",
     "wagtail.contrib.settings",
     "wagtail.embeds",
     "wagtail.sites",
@@ -51,25 +61,36 @@ INSTALLED_APPS = [
     "wagtail.images",
     "wagtail.admin",
     "wagtail.search",
+    "wagtail.snippets",
     "wagtail",
-    "wagtail_modeladmin",
+    "wagtailmarkdown",
     "wagtailmenus",
+    "wagtail_localize",
+    "wagtail_localize.locales",
     "taggit",
+    "wagtail.api.v2",
+    "rest_framework",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.sitemaps",
     "django.contrib.staticfiles",
     "widget_tweaks",
     "dsfr",
     "sass_processor",
     "content_manager",
+    "blog",
+    "events",
+    "forms",
 ]
 
-if DEBUG:
+# Only add these on a dev machine, outside of tests
+if not TESTING and DEBUG and "localhost" in HOST_URL:
     INSTALLED_APPS += [
         "django_extensions",
         "wagtail.contrib.styleguide",
+        "debug_toolbar",
     ]
 
 MIDDLEWARE = [
@@ -77,11 +98,30 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "django.middleware.locale.LocaleMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "wagtail.contrib.redirects.middleware.RedirectMiddleware",
 ]
+
+# Only add this on a dev machine, outside of tests
+if not TESTING and DEBUG and "localhost" in HOST_URL:
+    MIDDLEWARE += [
+        "debug_toolbar.middleware.DebugToolbarMiddleware",
+    ]
+
+    # Don't show the toolbar on admin previews
+    def show_toolbar(request):
+        request.META["wsgi.multithread"] = True
+        request.META["wsgi.multiprocess"] = True
+        excluded_urls = ["/pages/preview/", "/pages/preview_loading/", "/edit/preview/"]
+        excluded = any(request.path.endswith(url) for url in excluded_urls)
+        return DEBUG and not excluded
+
+    DEBUG_TOOLBAR_CONFIG = {
+        "SHOW_TOOLBAR_CALLBACK": show_toolbar,
+    }
 
 ROOT_URLCONF = "config.urls"
 
@@ -101,6 +141,8 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "wagtail.contrib.settings.context_processors.settings",
                 "wagtailmenus.context_processors.wagtailmenus",
+                "content_manager.context_processors.skiplinks",
+                "content_manager.context_processors.mega_menus",
             ],
         },
     },
@@ -108,18 +150,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-DATABASES = {
-    "default": dj_database_url.parse(
-        DATABASE_URL,
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
-}
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
+    }
+else:
+    raise ValueError("Please set the DATABASE_URL environment variable")
 
 # Password validation
 # https://docs.djangoproject.com/en/4.1/ref/settings/#auth-password-validators
@@ -139,26 +183,32 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-WAGTAIL_PASSWORD_RESET_ENABLED = os.getenv("WAGTAIL_PASSWORD_RESET_ENABLED", False)
-
-
 # Internationalization
 # https://docs.djangoproject.com/en/3.2/topics/i18n/
 
-LANGUAGE_CODE = "fr-FR"
+LANGUAGE_CODE = "fr"
 
 TIME_ZONE = "Europe/Paris"
 
 USE_I18N = True
 
-USE_L10N = True
-
 USE_TZ = True
 
+WAGTAIL_I18N_ENABLED = True
+
+WAGTAIL_CONTENT_LANGUAGES = LANGUAGES = [
+    ("en", "English"),
+    ("fr", "French"),
+]
+
+LOCALE_PATHS = ["locale"]
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/3.2/howto/static-files/
-# https://whitenoise.evans.io/en/latest/
+# https://docs.djangoproject.com/en/5.0/howto/static-files/
+STORAGES = {}
+STORAGES["staticfiles"] = {
+    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+}
 
 STATICFILES_FINDERS = [
     "django.contrib.staticfiles.finders.FileSystemFinder",
@@ -167,26 +217,36 @@ STATICFILES_FINDERS = [
 ]
 
 # S3 uploads & MEDIA CONFIGURATION
-# ------------------------------------------------------------------------------
+# https://django-storages.readthedocs.io/en/latest/backends/amazon-S3.html
 
 if os.getenv("S3_HOST"):
-    AWS_S3_ACCESS_KEY_ID = os.getenv("S3_KEY_ID", "123")
-    AWS_S3_SECRET_ACCESS_KEY = os.getenv("S3_KEY_SECRET", "secret")
-    AWS_S3_ENDPOINT_URL = f"{os.getenv('S3_PROTOCOL', 'https')}://{os.getenv('S3_HOST')}"
-    AWS_STORAGE_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "set-bucket-name")
-    AWS_S3_STORAGE_BUCKET_REGION = os.getenv("S3_BUCKET_REGION", "fr")
-    AWS_S3_FILE_OVERWRITE = False
-    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
-    MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/"
-    AWS_LOCATION = os.getenv("S3_LOCATION", "")
+    endpoint_url = f"{os.getenv('S3_PROTOCOL', 'https')}://{os.getenv('S3_HOST')}"
+
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": os.getenv("S3_BUCKET_NAME", "set-bucket-name"),
+            "access_key": os.getenv("S3_KEY_ID", "123"),
+            "secret_key": os.getenv("S3_KEY_SECRET", "secret"),
+            "endpoint_url": endpoint_url,
+            "region_name": os.getenv("S3_BUCKET_REGION", "fr"),
+            "file_overwrite": False,
+            "location": os.getenv("S3_LOCATION", ""),
+        },
+    }
+
+    MEDIA_URL = f"{endpoint_url}/"
 else:
-    DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
+    STORAGES["default"] = {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    }
     MEDIA_URL = "medias/"
     MEDIA_ROOT = os.path.join(BASE_DIR, os.getenv("MEDIA_ROOT", ""))
 
 # Django Sass
 SASS_PROCESSOR_ROOT = os.path.join(BASE_DIR, "static/css")
 SASS_PROCESSOR_AUTO_INCLUDE = False
+SASS_OUTPUT_STYLE = "compressed"
 
 STATIC_URL = "static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
@@ -201,11 +261,23 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 # Wagtail settings
 # https://docs.wagtail.org/en/stable/reference/settings.html
 
-WAGTAIL_SITE_NAME = os.getenv("SITE_NAME", "Gestionnaire de contenu avec le Système de Design de l’État")
+WAGTAIL_SITE_NAME = os.getenv("SITE_NAME", "Sites faciles")
 
 # Base URL to use when referring to full URLs within the Wagtail admin backend -
 # e.g. in notification emails. Don't include '/admin' or a trailing slash
-WAGTAILADMIN_BASE_URL = f"{os.getenv('HOST_PROTO', 'https')}://{os.getenv('HOST_URL', 'localhost')}"
+WAGTAILADMIN_BASE_URL = f"{os.getenv('HOST_PROTO', 'https')}://{HOST_URL}"
+
+HOST_PORT = os.getenv("HOST_PORT", "")
+if HOST_PORT != "":
+    WAGTAILADMIN_BASE_URL = f"{WAGTAILADMIN_BASE_URL}:{HOST_PORT}"
+WAGTAILAPI_BASE_URL = WAGTAILADMIN_BASE_URL
+
+WAGTAILADMIN_PATH = os.getenv("WAGTAILADMIN_PATH", "cms-admin/")
+
+WAGTAIL_FRONTEND_LOGIN_URL = LOGIN_URL = f"/{WAGTAILADMIN_PATH}login/"
+LOGOUT_URL = f"/{WAGTAILADMIN_PATH}logout/"
+
+WAGTAIL_PASSWORD_REQUIRED_TEMPLATE = "content_manager/password_required.html"
 
 # Disable Gravatar service
 WAGTAIL_GRAVATAR_PROVIDER_URL = None
@@ -227,10 +299,85 @@ WAGTAIL_MODERATION_ENABLED = False
 WAGTAILMENUS_FLAT_MENUS_HANDLE_CHOICES = (
     ("header_tools", "Menu en haut à droite"),
     ("footer", "Menu en pied de page"),
+    ("mega_menu_section_1", "Catégorie de méga-menu 1"),
+    ("mega_menu_section_2", "Catégorie de méga-menu 2"),
+    ("mega_menu_section_3", "Catégorie de méga-menu 3"),
+    ("mega_menu_section_4", "Catégorie de méga-menu 4"),
+    ("mega_menu_section_5", "Catégorie de méga-menu 5"),
+    ("mega_menu_section_6", "Catégorie de méga-menu 6"),
+    ("mega_menu_section_7", "Catégorie de méga-menu 7"),
+    ("mega_menu_section_8", "Catégorie de méga-menu 8"),
+    ("mega_menu_section_9", "Catégorie de méga-menu 9"),
+    ("mega_menu_section_10", "Catégorie de méga-menu 10"),
+    ("mega_menu_section_11", "Catégorie de méga-menu 11"),
+    ("mega_menu_section_12", "Catégorie de méga-menu 12"),
+    ("mega_menu_section_13", "Catégorie de méga-menu 13"),
+    ("mega_menu_section_14", "Catégorie de méga-menu 14"),
+    ("mega_menu_section_15", "Catégorie de méga-menu 15"),
+    ("mega_menu_section_16", "Catégorie de méga-menu 16"),
 )
 
 WAGTAILIMAGES_EXTENSIONS = ["gif", "jpg", "jpeg", "png", "webp", "svg"]
+SF_SCHEME_DEPENDENT_SVGS = True if os.getenv("SF_SCHEME_DEPENDENT_SVGS", False) == "True" else False
 
+# Allows for complex Streamfields without completely removing checks
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
+
+# Email settings
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "")
+
+if DEFAULT_FROM_EMAIL:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = os.getenv("EMAIL_HOST", None)
+    EMAIL_PORT = os.getenv("EMAIL_PORT", None)
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", None)
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", None)
+    EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", None)
+    EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", None)
+    EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", 30))
+    EMAIL_SSL_KEYFILE = os.getenv("EMAIL_SSL_KEYFILE", None)
+    EMAIL_SSL_CERTFILE = os.getenv("EMAIL_SSL_CERTFILE", None)
+
+WAGTAIL_PASSWORD_RESET_ENABLED = os.getenv("WAGTAIL_PASSWORD_RESET_ENABLED", False)
+
+# (Optional) ProConnect settings
+PROCONNECT_ACTIVATED = True if os.getenv("PROCONNECT_ACTIVATED", False) == "True" else False
+OIDC_CREATE_USER = True if os.getenv("PROCONNECT_CREATE_USER", "True") == "True" else False
+OIDC_RP_CLIENT_ID = os.getenv("PROCONNECT_CLIENT_ID", "")
+OIDC_RP_CLIENT_SECRET = os.getenv("PROCONNECT_CLIENT_SECRET", "")
+OIDC_RP_SCOPES = os.getenv("PROCONNECT_SCOPES", "openid given_name usual_name email siret uid")
+OIDC_RP_SIGN_ALGO = os.getenv("PROCONNECT_SIGN_ALGO", "RS256")
+OIDC_STORE_ID_TOKEN = True
+PROCONNECT_DOMAIN = os.getenv("PROCONNECT_DOMAIN", "fca.integ01.dev-agentconnect.fr")
+PROCONNECT_API_ROOT = os.getenv("PROCONNECT_API_ROOT", f"https://{PROCONNECT_DOMAIN}/api/v2")
+OIDC_OP_JWKS_ENDPOINT = f"{PROCONNECT_API_ROOT}/jwks"
+OIDC_OP_AUTHORIZATION_ENDPOINT = f"{PROCONNECT_API_ROOT}/authorize"
+OIDC_OP_TOKEN_ENDPOINT = f"{PROCONNECT_API_ROOT}/token"
+OIDC_OP_USER_ENDPOINT = f"{PROCONNECT_API_ROOT}/userinfo"
+OIDC_OP_LOGOUT_ENDPOINT = f"{PROCONNECT_API_ROOT}/session/end"
+USER_OIDC_ESSENTIAL_CLAIMS = ["email"]
+OIDC_AUTH_REQUEST_EXTRA_PARAMS = {"acr_values": "eidas1"}
+OIDC_REDIRECT_ALLOWED_HOSTS = ALLOWED_HOSTS
+PROCONNECT_USER_CREATION_FILTER = os.getenv("PROCONNECT_USER_CREATION_FILTER", None)
+LASUITE_DOMAINE_API_KEY = os.getenv("LASUITE_DOMAINE_API_KEY", None)
+
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
+
+if PROCONNECT_ACTIVATED:
+    INSTALLED_APPS += [
+        "mozilla_django_oidc",
+        "proconnect",
+    ]
+
+    AUTHENTICATION_BACKENDS = [
+        "django.contrib.auth.backends.ModelBackend",
+        "proconnect.backends.OIDCAuthenticationBackend",
+    ]
+
+    LOGOUT_URL = "/oidc/logout/"
+
+# CSRF
 CSRF_TRUSTED_ORIGINS = []
 for host in ALLOWED_HOSTS:
     CSRF_TRUSTED_ORIGINS.append("https://" + host)
